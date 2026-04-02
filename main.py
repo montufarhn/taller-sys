@@ -44,8 +44,24 @@ class ClienteBase(BaseModel):
     telefono: str
     direccion: Optional[str] = None
 
-class ClienteResponse(ClienteBase):
+class ClienteResponse(BaseModel):
     id: int
+    nombre: str
+    rtn: Optional[str] = None
+    dni: Optional[str] = None
+    telefono: str
+    direccion: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class VehiculoResponse(BaseModel):
+    id: int
+    placa: str
+    marca: Optional[str] = None
+    modelo: Optional[str] = None
+    anio: Optional[int] = None
+    color: Optional[str] = None
+    cliente_id: int
     class Config:
         from_attributes = True
 
@@ -97,18 +113,23 @@ class CobroRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Crear usuario admin inicial si no existe
+    # Crear usuarios iniciales si no existen
     db = SessionLocal()
     try:
-        if not db.query(models.Usuario).filter(models.Usuario.username == "admin").first():
-            hashed_pw = pwd_context.hash("admin123")
-            admin = models.Usuario(username="admin", password_hash=hashed_pw, rol="admin")
-            db.add(admin)
-            # Crear también un jefe de pista y cajero para pruebas
-            db.add(models.Usuario(username="jefe", password_hash=pwd_context.hash("jefe123"), rol="jefe_pista"))
-            db.add(models.Usuario(username="caja", password_hash=pwd_context.hash("caja123"), rol="cajero"))
-            db.add(models.Usuario(username="taller", password_hash=pwd_context.hash("taller123"), rol="mecanico"))
-            db.commit()
+        default_users = [
+            {"username": "admin", "password": "admin123", "rol": "admin"},
+            {"username": "jefe", "password": "jefe123", "rol": "jefe_pista"},
+            {"username": "caja", "password": "caja123", "rol": "cajero"},
+            {"username": "taller", "password": "taller123", "rol": "mecanico"},
+        ]
+        for user_data in default_users:
+            if not db.query(models.Usuario).filter(models.Usuario.username == user_data["username"]).first():
+                db.add(models.Usuario(
+                    username=user_data["username"],
+                    password_hash=pwd_context.hash(user_data["password"]),
+                    rol=user_data["rol"]
+                ))
+        db.commit()
 
         # Crear configuración de negocio inicial si no existe
         if not db.query(models.NegocioConfig).first():
@@ -169,6 +190,11 @@ def check_jefe_or_admin(current_user: models.Usuario = Depends(get_current_user)
         raise HTTPException(status_code=403, detail="Permiso denegado: Solo el Administrador o Jefe de Pista pueden registrar clientes")
     return current_user
 
+def check_cajero_o_jefe_o_admin(current_user: models.Usuario = Depends(get_current_user)):
+    if current_user.rol not in ["admin", "cajero", "jefe_pista"]:
+        raise HTTPException(status_code=403, detail="Permiso denegado: Acceso restringido a Administrador, Cajero o Jefe de Pista")
+    return current_user
+
 def check_cajero_or_admin(current_user: models.Usuario = Depends(get_current_user)):
     if current_user.rol not in ["admin", "cajero"]:
         raise HTTPException(status_code=403, detail="Permiso denegado: Acceso restringido a Administrador o Cajero")
@@ -182,10 +208,16 @@ def check_mecanico_or_admin(current_user: models.Usuario = Depends(get_current_u
 def procesar_identidad(identidad_str: Optional[str]):
     if not identidad_str:
         return None, None
+
     digits = "".join(filter(str.isdigit, identidad_str))
-    if len(digits) > 13:
-        return identidad_str, None
-    return None, identidad_str
+    if len(digits) == 13:
+        formatted_dni = f"{digits[0:4]}-{digits[4:8]}-{digits[8:13]}"
+        return None, formatted_dni
+    if len(digits) >= 14:
+        formatted_rtn = f"{digits[0:4]}-{digits[4:8]}-{digits[8:]}"
+        return formatted_rtn, None
+
+    return None, None
 
 @app.get("/")
 async def home():
@@ -257,6 +289,19 @@ def crear_item_inventario(item: CatalogoBase, db: Session = Depends(get_db), adm
     db.refresh(nuevo_item)
     return nuevo_item
 
+@app.put("/inventario/{item_id}", response_model=CatalogoResponse)
+def actualizar_item_catalogo(item_id: int, item_data: CatalogoBase, db: Session = Depends(get_db), admin: models.Usuario = Depends(check_admin)):
+    item = db.query(models.ItemCatalogo).filter(models.ItemCatalogo.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    item.nombre = item_data.nombre
+    item.precio = item_data.precio
+    item.tipo = item_data.tipo
+    item.existencia = item_data.existencia
+    db.commit()
+    db.refresh(item)
+    return item
+
 @app.post("/inventario/comprar")
 def comprar_inventario(item_id: int, cantidad: int, costo_total: float, db: Session = Depends(get_db), admin: models.Usuario = Depends(check_admin)):
     item = db.query(models.ItemCatalogo).filter(models.ItemCatalogo.id == item_id).first()
@@ -303,6 +348,13 @@ def actualizar_negocio(negocio_data: NegocioBase, db: Session = Depends(get_db),
 @app.get("/clientes/", response_model=List[ClienteResponse])
 def listar_clientes(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
     return db.query(models.Cliente).all()
+
+@app.get("/clientes/{cliente_id}/vehiculos", response_model=List[VehiculoResponse])
+def listar_vehiculos_cliente(cliente_id: int, db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    cliente = db.query(models.Cliente).filter(models.Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return db.query(models.Vehiculo).filter(models.Vehiculo.cliente_id == cliente_id).all()
 
 # Endpoint para el Jefe de Pista: Registrar Cliente
 @app.post("/clientes/", response_model=ClienteResponse)
@@ -381,6 +433,10 @@ def crear_orden(
     
     rtn, dni = procesar_identidad(factura_identidad)
 
+    if tipo == "Cotizacion":
+        rtn = None
+        dni = None
+
     nueva_orden = models.OrdenTrabajo(
         cliente_id=cliente_id, 
         vehiculo_id=vehiculo.id if vehiculo else None,
@@ -394,7 +450,18 @@ def crear_orden(
     )
     db.add(nueva_orden)
     db.commit()
-    return {"message": f"{tipo} creada exitosamente"}
+    db.refresh(nueva_orden)
+    return {
+        "id": nueva_orden.id,
+        "descripcion": nueva_orden.descripcion,
+        "total": nueva_orden.total,
+        "tipo": nueva_orden.tipo,
+        "fecha": nueva_orden.fecha,
+        "estado": nueva_orden.estado,
+        "cliente_nombre": nueva_orden.factura_nombre,
+        "cliente_rtn": nueva_orden.factura_rtn or "Consumidor Final",
+        "cliente_dni": nueva_orden.factura_dni or "N/A"
+    }
 
 # Cajero: Ver Ordenes Pendientes de Cobro
 @app.get("/caja/pendientes")
@@ -402,9 +469,17 @@ def listar_pendientes(db: Session = Depends(get_db), current_user: models.Usuari
     # Unimos con la tabla de clientes para obtener nombre y RTN para la búsqueda
     query = db.query(models.OrdenTrabajo, models.Cliente).join(
         models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
-    ).filter(models.OrdenTrabajo.estado == "Pendiente").all()
+    ).filter(models.OrdenTrabajo.estado == "Pendiente", models.OrdenTrabajo.tipo == "Orden").order_by(models.OrdenTrabajo.id).all()
     
-    return format_ordenes_pago(query)
+    return format_ordenes_pago(query, db)
+
+@app.get("/caja/cotizaciones")
+def listar_cotizaciones(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    query = db.query(models.OrdenTrabajo, models.Cliente).join(
+        models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
+    ).filter(models.OrdenTrabajo.tipo == "Cotizacion", models.OrdenTrabajo.estado == "Pendiente").order_by(models.OrdenTrabajo.id).all()
+    
+    return format_ordenes_pago(query, db)
 
 @app.put("/ordenes/{orden_id}/facturacion")
 def actualizar_facturacion_orden(
@@ -431,7 +506,11 @@ def cobrar_orden(
     db: Session = Depends(get_db), 
     current_user: models.Usuario = Depends(get_current_user)):
     orden = db.query(models.OrdenTrabajo).filter(models.OrdenTrabajo.id == orden_id).first()
-    if not orden: raise HTTPException(status_code=404, detail="Orden no encontrada")
+    if not orden:
+        raise HTTPException(status_code=404, detail="Orden no encontrada")
+    if orden.tipo != "Orden":
+        raise HTTPException(status_code=400, detail="Solo se pueden cobrar órdenes, convierta la cotización a caja primero")
+
     orden.estado = "Pagada"
     orden.metodo_pago = cobro.metodo_pago
     orden.referencia_pago = cobro.referencia_pago
@@ -457,9 +536,12 @@ def cobrar_orden(
 def listar_pagadas(db: Session = Depends(get_db), user: models.Usuario = Depends(check_cajero_or_admin)):
     query = db.query(models.OrdenTrabajo, models.Cliente).join(
         models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
-    ).filter(models.OrdenTrabajo.estado == "Pagada").all()
+    ).filter(
+        models.OrdenTrabajo.tipo == "Orden",
+        models.OrdenTrabajo.estado.in_(["Pagada", "Anulada"])
+    ).order_by(models.OrdenTrabajo.id).all()
     
-    return format_ordenes_pago(query)
+    return format_ordenes_pago(query, db)
 
 @app.get("/reportes/egresos", response_model=List[EgresoResponse])
 def listar_egresos(db: Session = Depends(get_db), admin: models.Usuario = Depends(check_admin)):
@@ -468,7 +550,7 @@ def listar_egresos(db: Session = Depends(get_db), admin: models.Usuario = Depend
 @app.get("/reportes/rendimiento")
 def reporte_rendimiento(db: Session = Depends(get_db), admin: models.Usuario = Depends(check_admin)):
     # Obtener trabajos completados que tienen registro de tiempo
-    trabajos = db.query(models.OrdenTrabajo, models.Usuario.username).join(
+    trabajos_completados = db.query(models.OrdenTrabajo, models.Usuario.username).join(
         models.Usuario, models.OrdenTrabajo.mecanico_id == models.Usuario.id
     ).filter(
         models.OrdenTrabajo.taller_completado == True,
@@ -476,40 +558,110 @@ def reporte_rendimiento(db: Session = Depends(get_db), admin: models.Usuario = D
         models.OrdenTrabajo.fin_trabajo != None
     ).all()
 
+    # Obtener trabajos en progreso asignados a mecánicos
+    trabajos_en_progreso = db.query(models.OrdenTrabajo, models.Usuario.username).join(
+        models.Usuario, models.OrdenTrabajo.mecanico_id == models.Usuario.id
+    ).filter(
+        models.OrdenTrabajo.requiere_taller == True,
+        models.OrdenTrabajo.taller_completado == False,
+        models.OrdenTrabajo.mecanico_id != None
+    ).all()
+
     stats = {}
-    for orden, name in trabajos:
+    for orden, name in trabajos_completados:
         if name not in stats:
-            stats[name] = {"total_trabajos": 0, "tiempo_total_segundos": 0}
+            stats[name] = {"total_trabajos": 0, "tiempo_total_segundos": 0, "trabajos_en_progreso": 0}
         
-        # Calcular duración en segundos
         duracion = (orden.fin_trabajo - orden.inicio_trabajo).total_seconds()
         stats[name]["total_trabajos"] += 1
         stats[name]["tiempo_total_segundos"] += duracion
 
+    for orden, name in trabajos_en_progreso:
+        if name not in stats:
+            stats[name] = {"total_trabajos": 0, "tiempo_total_segundos": 0, "trabajos_en_progreso": 0}
+        stats[name]["trabajos_en_progreso"] += 1
+
     resultado = []
     for name, data in stats.items():
-        promedio_minutos = (data["tiempo_total_segundos"] / data["total_trabajos"]) / 60
+        promedio_minutos = 0
+        if data["total_trabajos"] > 0:
+            promedio_minutos = (data["tiempo_total_segundos"] / data["total_trabajos"]) / 60
         resultado.append({
             "mecanico": name,
             "trabajos_completados": data["total_trabajos"],
-            "tiempo_promedio_min": round(promedio_minutos, 2)
+            "tiempo_promedio_min": round(promedio_minutos, 2),
+            "trabajos_en_progreso": data["trabajos_en_progreso"]
         })
+
+    # Trabajos pendientes sin asignar en el taller
+    pendientes_sin_asignar = db.query(models.OrdenTrabajo).filter(
+        models.OrdenTrabajo.requiere_taller == True,
+        models.OrdenTrabajo.taller_completado == False,
+        models.OrdenTrabajo.mecanico_id == None
+    ).count()
+    if pendientes_sin_asignar > 0:
+        resultado.append({
+            "mecanico": "Pendientes sin asignar",
+            "trabajos_completados": 0,
+            "tiempo_promedio_min": 0,
+            "trabajos_en_progreso": pendientes_sin_asignar,
+            "resumen": True
+        })
+
     return resultado
 
-def format_ordenes_pago(query):
-    return [{
-        "id": o.id,
-        "descripcion": o.descripcion,
-        "total": o.total,
-        "tipo": o.tipo,
-        "fecha": o.fecha,
-        "cliente_nombre": o.factura_nombre or c.nombre,
-        "cliente_rtn": o.factura_rtn or c.rtn or "Consumidor Final",
-        "cliente_dni": o.factura_dni or c.dni or "N/A",
-        "metodo_pago": o.metodo_pago,
-        "referencia_pago": o.referencia_pago,
-        "comprobante_pago": o.comprobante_pago
-    } for o, c in query]
+def format_ordenes_pago(query, db):
+    ordenes_formateadas = []
+    for o, c in query:
+        if o.tipo == "Orden":
+            numero_documento = db.query(models.OrdenTrabajo).filter(
+                models.OrdenTrabajo.tipo == "Orden",
+                models.OrdenTrabajo.id <= o.id
+            ).count()
+        else:
+            numero_documento = db.query(models.OrdenTrabajo).filter(
+                models.OrdenTrabajo.tipo == "Cotizacion",
+                models.OrdenTrabajo.id <= o.id
+            ).count()
+
+        cliente_nombre = o.factura_nombre or c.nombre
+        cliente_rtn = "Consumidor Final"
+        cliente_dni = "N/A"
+        if o.tipo == "Orden":
+            cliente_rtn = o.factura_rtn or c.rtn or "Consumidor Final"
+            cliente_dni = o.factura_dni or c.dni or "N/A"
+
+        ordenes_formateadas.append({
+            "id": o.id,
+            "descripcion": o.descripcion,
+            "total": o.total,
+            "tipo": o.tipo,
+            "fecha": o.fecha,
+            "estado": o.estado,
+            "cliente_nombre": cliente_nombre,
+            "cliente_rtn": cliente_rtn,
+            "cliente_dni": cliente_dni,
+            "metodo_pago": o.metodo_pago,
+            "referencia_pago": o.referencia_pago,
+            "comprobante_pago": o.comprobante_pago,
+            "documento_numero": numero_documento
+        })
+    return ordenes_formateadas
+
+# Admin/Cajero: Convertir Cotización a Orden (Enviar a Caja)
+@app.post("/caja/convertir-cotizacion/{orden_id}")
+def convertir_cotizacion(orden_id: int, db: Session = Depends(get_db), user: models.Usuario = Depends(check_cajero_o_jefe_o_admin)):
+    orden = db.query(models.OrdenTrabajo).filter(models.OrdenTrabajo.id == orden_id, models.OrdenTrabajo.tipo == "Cotizacion").first()
+    if not orden:
+        raise HTTPException(status_code=404, detail="Cotización no encontrada")
+    if orden.estado != "Pendiente":
+        raise HTTPException(status_code=400, detail="Solo se pueden convertir cotizaciones pendientes")
+    
+    orden.tipo = "Orden"
+    orden.estado = "Pendiente"
+    orden.fecha = datetime.now(timezone.utc) # Actualizamos la fecha al momento de convertir
+    db.commit()
+    return {"message": "Cotización enviada a caja exitosamente"}
 
 # Admin/Cajero: Anular Factura (Cancelar definitivamente)
 @app.post("/caja/anular/{orden_id}")
