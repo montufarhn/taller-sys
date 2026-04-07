@@ -1,34 +1,64 @@
+; Script generado por el Inno Setup Script Wizard.
+; SEE THE DOCUMENTATION FOR DETAILS ON CREATING INNO SETUP SCRIPT FILES!
+
+#define MyAppName "Multiservicios Flores S. De R. L."
+#define MyAppVersion "1.0"
+#define MyAppPublisher "XatruchTech"
+#define MyAppURL "https://www.xatruchtech.com/" ; Reemplaza con la URL real si existe
+#define MyAppExeName "TallerProAuto.exe" ; Debe coincidir con el nombre generado por PyInstaller
+#define MyAppIcon "Logo.ico" ; IMPORTANTE: Debe ser un archivo .ico para el instalador
+
 [Setup]
-AppName=Taller Pro Auto
-AppVersion=1.0
-DefaultDirName={pf}\Taller Pro Auto
-DefaultGroupName=Taller Pro Auto
-DisableProgramGroupPage=yes
-OutputDir=Output
+; NOTA: El valor de AppId identifica de forma única esta aplicación.
+; No uses el mismo valor de AppId en instaladores para otras aplicaciones.
+; (Para generar un nuevo GUID, haz clic en Herramientas | Generar GUID dentro del IDE de Inno Setup.)
+AppId={{631C0B37-5A64-4BA4-B743-C59D54E35748}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
+DefaultDirName={commonpf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+AllowNoIcons=yes
 OutputBaseFilename=TallerProAuto_Installer
 Compression=lzma
 SolidCompression=yes
+WizardStyle=modern
+SetupIconFile={#MyAppIcon}
+UninstallDisplayIcon={app}\{#MyAppIcon}
 PrivilegesRequired=admin
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
-
-[Files]
-Source: "dist\TallerProAutoService\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
-Source: "dist\TallerProAutoLauncher\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
-
-[Icons]
-Name: "{group}\Taller Pro Auto"; Filename: "{app}\TallerProAutoLauncher.exe"
-Name: "{commondesktop}\Taller Pro Auto"; Filename: "{app}\TallerProAutoLauncher.exe"; Tasks: desktopicon
+Name: "spanish"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Iconos:"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:CreateIcons}"; Flags: unchecked
+Name: "autostart"; Description: "Iniciar {#MyAppName} automáticamente con Windows"; GroupDescription: "Opciones de inicio:"
+
+[Files]
+; Archivos generados por PyInstaller (deben estar en la carpeta 'dist' relativa al .iss)
+Source: "dist\main.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\TallerProAuto.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+; Otros archivos de la aplicación (deben estar en la carpeta raíz del proyecto)
+Source: "index.html"; DestDir: "{app}"; Flags: ignoreversion
+Source: "Logo.ico"; DestDir: "{app}"; Flags: ignoreversion
+; Si deseas incluir una base de datos SQLite inicial (vacía o preconfigurada), descomenta la siguiente línea:
+; Source: "taller.db"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcon}"
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcon}"
+Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIcon}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\TallerProAutoService.exe"; Parameters: "install --startup auto"; Description: "Instalar servicio de Taller Pro Auto"; Flags: waituntilterminated
-Filename: "{app}\TallerProAutoService.exe"; Parameters: "start"; Description: "Iniciar servicio de Taller Pro Auto"; Flags: waituntilterminated
-Filename: "{app}\TallerProAutoLauncher.exe"; Description: "Abrir Taller Pro Auto"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-Filename: "{app}\TallerProAutoService.exe"; Parameters: "stop"; Flags: waituntilterminated
-Filename: "{app}\TallerProAutoService.exe"; Parameters: "remove"; Flags: waituntilterminated
+[Registry]
+; Entrada de autoinicio para la aplicación de bandeja del sistema
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: "{app}\{#MyAppExeName}"; Tasks: autostart; Flags: uninsdeletevalue
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\taller.db"

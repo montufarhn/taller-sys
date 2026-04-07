@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+import sys # Added for PyInstaller path handling
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, get_db
@@ -15,6 +16,7 @@ import models
 
 # Configuración de Seguridad
 SECRET_KEY = "taller_pro_auto_honduras_2024"
+# En un entorno de producción, esta clave debería cargarse desde una variable de entorno.
 ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -95,6 +97,7 @@ class NegocioBase(BaseModel):
     rango_desde: str
     rango_hasta: str
     fecha_limite: datetime
+    numero_inicio_factura: int = 1
     logo: Optional[str] = None
 
 class NegocioResponse(NegocioBase):
@@ -141,6 +144,7 @@ async def lifespan(app: FastAPI):
                 cai="XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XX",
                 rango_desde="000-001-01-00000001",
                 rango_hasta="000-001-01-00000999",
+                numero_inicio_factura=1,
                 fecha_limite=datetime.now(timezone.utc) + timedelta(days=365)
             )
             db.add(config_inicial)
@@ -219,14 +223,33 @@ def procesar_identidad(identidad_str: Optional[str]):
 
     return None, None
 
+# Determine the base path for bundled files or installed files
+def get_base_path():
+    if getattr(sys, 'frozen', False):
+        # Running as a PyInstaller bundle, files are in the temporary extraction folder
+        return sys._MEIPASS
+    else:
+        # Running as a script
+        return os.path.dirname(os.path.abspath(__file__))
+
+BASE_PATH = get_base_path()
+
 @app.get("/")
 async def home():
-    return FileResponse("index.html")
+    index_path = os.path.join(BASE_PATH, "index.html")
+    if not os.path.exists(index_path):
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return FileResponse(index_path)
 
 # --- Gestión de Usuarios (Solo Admin) ---
 @app.get("/usuarios/", response_model=List[UserResponse])
 def listar_usuarios(db: Session = Depends(get_db), admin: models.Usuario = Depends(check_admin)):
     return db.query(models.Usuario).all()
+
+# Nuevo endpoint para obtener solo mecánicos
+@app.get("/usuarios/mecanicos", response_model=List[UserResponse])
+def listar_mecanicos(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
+    return db.query(models.Usuario).filter(models.Usuario.rol == "mecanico", models.Usuario.activo == True).all()
 
 @app.post("/usuarios/", response_model=UserResponse)
 def crear_usuario(user: UserCreate, db: Session = Depends(get_db), admin: models.Usuario = Depends(check_admin)):
@@ -399,6 +422,14 @@ def eliminar_cliente(cliente_id: int, db: Session = Depends(get_db), admin: mode
     db_cliente = db.query(models.Cliente).filter(models.Cliente.id == cliente_id).first()
     if not db_cliente:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    
+    # Verificar si el cliente tiene órdenes de trabajo o cotizaciones no anuladas
+    ordenes_activas = db.query(models.OrdenTrabajo).filter(
+        models.OrdenTrabajo.cliente_id == cliente_id,
+        models.OrdenTrabajo.estado != "Anulada"
+    ).first()
+    if ordenes_activas:
+        raise HTTPException(status_code=400, detail="No se puede eliminar el cliente porque tiene facturas o cotizaciones pendientes/válidas.")
     db.delete(db_cliente)
     db.commit()
     return {"message": "Cliente eliminado"}
@@ -418,6 +449,7 @@ def crear_orden(
     anio: Optional[int] = None,
     color: Optional[str] = None,
     requiere_taller: bool = False,
+    mecanico_id: Optional[int] = None,
     db: Session = Depends(get_db), 
     current_user: models.Usuario = Depends(get_current_user)
 ):
@@ -446,11 +478,32 @@ def crear_orden(
         descripcion=descripcion, 
         total=total, 
         tipo=tipo,
-        requiere_taller=requiere_taller
+        requiere_taller=requiere_taller,
+        mecanico_id=mecanico_id
     )
     db.add(nueva_orden)
     db.commit()
     db.refresh(nueva_orden)
+
+    if tipo == "Cotizacion":
+        numero_inicial = 1
+        # Para cotizaciones no aplicamos RTN/DNI fiscal obligatoriamente
+        rtn = None
+        dni = None
+    else:
+        negocio_config = db.query(models.NegocioConfig).first()
+        if negocio_config and getattr(negocio_config, 'numero_inicio_factura', None) is not None:
+            numero_inicial = negocio_config.numero_inicio_factura
+        else:
+            numero_inicial = obtener_numero_inicial_desde_rango(negocio_config.rango_desde if negocio_config else None)
+
+    documentos_anteriores = db.query(models.OrdenTrabajo).filter(
+        models.OrdenTrabajo.tipo == tipo,
+        models.OrdenTrabajo.id <= nueva_orden.id
+    ).count()
+
+    documento_numero = numero_inicial + documentos_anteriores - 1
+
     return {
         "id": nueva_orden.id,
         "descripcion": nueva_orden.descripcion,
@@ -460,14 +513,15 @@ def crear_orden(
         "estado": nueva_orden.estado,
         "cliente_nombre": nueva_orden.factura_nombre,
         "cliente_rtn": nueva_orden.factura_rtn or "Consumidor Final",
-        "cliente_dni": nueva_orden.factura_dni or "N/A"
+        "cliente_dni": nueva_orden.factura_dni or "N/A",
+        "documento_numero": documento_numero
     }
 
 # Cajero: Ver Ordenes Pendientes de Cobro
 @app.get("/caja/pendientes")
 def listar_pendientes(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
     # Unimos con la tabla de clientes para obtener nombre y RTN para la búsqueda
-    query = db.query(models.OrdenTrabajo, models.Cliente).join(
+    query = db.query(models.OrdenTrabajo, models.Cliente).outerjoin(
         models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
     ).filter(models.OrdenTrabajo.estado == "Pendiente", models.OrdenTrabajo.tipo == "Orden").order_by(models.OrdenTrabajo.id).all()
     
@@ -475,7 +529,7 @@ def listar_pendientes(db: Session = Depends(get_db), current_user: models.Usuari
 
 @app.get("/caja/cotizaciones")
 def listar_cotizaciones(db: Session = Depends(get_db), current_user: models.Usuario = Depends(get_current_user)):
-    query = db.query(models.OrdenTrabajo, models.Cliente).join(
+    query = db.query(models.OrdenTrabajo, models.Cliente).outerjoin(
         models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
     ).filter(models.OrdenTrabajo.tipo == "Cotizacion", models.OrdenTrabajo.estado == "Pendiente").order_by(models.OrdenTrabajo.id).all()
     
@@ -534,7 +588,7 @@ def cobrar_orden(
 # Admin: Listar Facturas Pagadas
 @app.get("/caja/pagadas")
 def listar_pagadas(db: Session = Depends(get_db), user: models.Usuario = Depends(check_cajero_or_admin)):
-    query = db.query(models.OrdenTrabajo, models.Cliente).join(
+    query = db.query(models.OrdenTrabajo, models.Cliente).outerjoin(
         models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
     ).filter(
         models.OrdenTrabajo.tipo == "Orden",
@@ -610,26 +664,52 @@ def reporte_rendimiento(db: Session = Depends(get_db), admin: models.Usuario = D
 
     return resultado
 
+
+def obtener_numero_inicial_desde_rango(rango_desde: Optional[str]) -> int:
+    if not rango_desde:
+        return 1
+    import re
+    match = re.search(r"(\d+)$", rango_desde.strip())
+    if not match:
+        return 1
+    try:
+        numero = int(match.group(1))
+        return numero if numero > 0 else 1
+    except ValueError:
+        return 1
+
+
 def format_ordenes_pago(query, db):
     ordenes_formateadas = []
+    negocio_config = db.query(models.NegocioConfig).first()
+    
+    # Determinar numero inicial base para las facturas (Orden)
+    if negocio_config and getattr(negocio_config, 'numero_inicio_factura', None) is not None:
+        numero_inicial_factura = negocio_config.numero_inicio_factura
+    else:
+        numero_inicial_factura = obtener_numero_inicial_desde_rango(negocio_config.rango_desde if negocio_config else None)
+
     for o, c in query:
         if o.tipo == "Orden":
-            numero_documento = db.query(models.OrdenTrabajo).filter(
+            documentos_anteriores = db.query(models.OrdenTrabajo).filter(
                 models.OrdenTrabajo.tipo == "Orden",
                 models.OrdenTrabajo.id <= o.id
             ).count()
+            numero_documento = numero_inicial_factura + documentos_anteriores - 1
         else:
-            numero_documento = db.query(models.OrdenTrabajo).filter(
+            documentos_anteriores = db.query(models.OrdenTrabajo).filter(
                 models.OrdenTrabajo.tipo == "Cotizacion",
                 models.OrdenTrabajo.id <= o.id
             ).count()
+            # Las cotizaciones siempre inician su propia secuencia desde 1
+            numero_documento = documentos_anteriores
 
-        cliente_nombre = o.factura_nombre or c.nombre
+        cliente_nombre = o.factura_nombre or (c.nombre if c else "Cliente Eliminado")
         cliente_rtn = "Consumidor Final"
         cliente_dni = "N/A"
         if o.tipo == "Orden":
-            cliente_rtn = o.factura_rtn or c.rtn or "Consumidor Final"
-            cliente_dni = o.factura_dni or c.dni or "N/A"
+            cliente_rtn = o.factura_rtn or (c.rtn if c else "Consumidor Final")
+            cliente_dni = o.factura_dni or (c.dni if c else "N/A")
 
         ordenes_formateadas.append({
             "id": o.id,
@@ -687,7 +767,7 @@ def asignar_trabajo(orden_id: int, db: Session = Depends(get_db), current_user: 
     orden = db.query(models.OrdenTrabajo).filter(models.OrdenTrabajo.id == orden_id).first()
     if not orden:
         raise HTTPException(status_code=404, detail="Orden no encontrada")
-    if orden.mecanico_id:
+    if orden.mecanico_id and orden.mecanico_id != current_user.id:
         raise HTTPException(status_code=400, detail="Este trabajo ya fue tomado por otro mecánico")
 
     orden.mecanico_id = current_user.id
@@ -713,7 +793,7 @@ def completar_trabajo(orden_id: int, db: Session = Depends(get_db), current_user
 # Pantalla Taller: Listar Trabajos Pendientes
 @app.get("/taller/pendientes")
 def listar_taller(db: Session = Depends(get_db), current_user: models.Usuario = Depends(check_mecanico_or_admin)):
-    query = db.query(models.OrdenTrabajo, models.Cliente, models.Vehiculo).join(
+    query = db.query(models.OrdenTrabajo, models.Cliente, models.Vehiculo).outerjoin(
         models.Cliente, models.OrdenTrabajo.cliente_id == models.Cliente.id
     ).outerjoin(
         models.Vehiculo, models.OrdenTrabajo.vehiculo_id == models.Vehiculo.id

@@ -92,6 +92,10 @@
                             <input id="v-anio" type="number" placeholder="Año" class="w-1/2 p-2 border rounded text-sm">
                             <input id="v-color" type="text" placeholder="Color" class="w-1/2 p-2 border rounded text-sm">
                         </div>
+                        <div class="col-span-2">
+                            <label class="text-[10px] font-bold text-blue-600 uppercase ml-1">Asignar Mecánico de Preferencia</label>
+                            <select id="select-mecanico-asignado" class="w-full p-2 border rounded text-sm bg-white"></select>
+                        </div>
                         <select id="cliente-vehiculos" class="w-full p-2 border rounded mt-2 hidden" onchange="seleccionarVehiculoCliente()">
                             <option value="">-- Seleccione un vehículo registrado --</option>
                         </select>
@@ -195,11 +199,16 @@
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Rango Autorizado (Desde)</label>
-                    <input id="biz-desde" type="text" class="w-full p-2 border rounded">
+                    <input id="biz-desde" type="text" class="w-full p-2 border rounded" placeholder="Ej: 000-001-01-00000001">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Número inicial de factura</label>
+                    <input id="biz-numero-inicio" type="number" min="1" class="w-full p-2 border rounded" placeholder="Ej: 1">
+                    <p class="text-xs text-gray-500 mt-1">Si completa este campo se actualizará automáticamente el sufijo de rango autorizado "Desde".</p>
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Rango Autorizado (Hasta)</label>
-                    <input id="biz-hasta" type="text" class="w-full p-2 border rounded">
+                    <input id="biz-hasta" type="text" class="w-full p-2 border rounded" placeholder="Ej: 000-001-01-00000999">
                 </div>
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Fecha Límite de Emisión</label>
@@ -491,10 +500,40 @@
         </div>
     </div>
 
+    <!-- Modal de Alerta Genérico (Información/Error) -->
+    <div id="modal-alerta" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[100]">
+        <div class="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 text-center">
+            <div id="alerta-icono" class="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"></div>
+            <h2 id="alerta-titulo" class="text-xl font-bold text-gray-800 mb-2"></h2>
+            <p id="alerta-mensaje" class="text-gray-600 mb-6"></p>
+            <button onclick="document.getElementById('modal-alerta').classList.add('hidden')" 
+                class="w-full p-2 rounded font-bold text-white transition-colors" id="alerta-btn">Entendido</button>
+        </div>
+    </div>
+
+    <!-- Modal de Confirmación Genérico -->
+    <div id="modal-confirm" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[100]">
+        <div class="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 text-center">
+            <div class="w-16 h-16 bg-yellow-100 text-yellow-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+            </div>
+            <h2 id="confirm-titulo" class="text-xl font-bold text-gray-800 mb-2">¿Está seguro?</h2>
+            <p id="confirm-mensaje" class="text-gray-600 mb-6"></p>
+            <div class="flex gap-2">
+                <button onclick="document.getElementById('modal-confirm').classList.add('hidden')" 
+                    class="flex-1 bg-gray-200 text-gray-800 p-2 rounded font-bold">Cancelar</button>
+                <button id="confirm-btn-proceder" class="flex-1 bg-blue-600 text-white p-2 rounded font-bold hover:bg-blue-700">Proceder</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentUser = null;
         let cacheClientes = [];
         let cacheCatalogo = [];
+        let cacheMecanicos = [];
         let itemsSeleccionados = [];
         let selectedClienteId = null;
         let cacheVehiculosCliente = [];
@@ -503,6 +542,13 @@
         let cachePagadas = [];
         let cacheNegocio = null;
         let currentEditingOrderId = null;
+        const IVA_RATE = 0.15;
+
+        function calcularImpuesto(total) {
+            const base = total / (1 + IVA_RATE);
+            const iva = total - base;
+            return { base, iva, total };
+        }
 
         // Al cargar la página, verificar si hay sesión guardada
         window.onload = () => {
@@ -553,7 +599,7 @@
                 localStorage.setItem('taller_session', JSON.stringify(currentUser));
                 showDashboard();
             } else {
-                alert("Usuario o contraseña incorrectos");
+                mostrarAlerta("Error de Acceso", "Usuario o contraseña incorrectos", "error");
             }
         }
 
@@ -565,6 +611,7 @@
             if(tabId === 'tab-reportes') cargarBalances();
             if(tabId === 'tab-rendimiento') cargarRendimiento();
             if(tabId === 'tab-documentos') cargarDocumentosRelacionados();
+            if(tabId === 'tab-documentos' && (currentUser.rol === 'admin' || currentUser.rol === 'jefe_pista')) cargarMecanicos();
             if(tabId === 'tab-taller') cargarTaller();
             if(tabId === 'tab-usuarios' && currentUser.rol === 'admin') cargarUsuarios();
             if(tabId === 'tab-negocio' && currentUser.rol === 'admin') cargarDatosNegocio();
@@ -624,6 +671,44 @@
             cargarDatosNegocio();
         }
 
+        function mostrarAlerta(titulo, mensaje, tipo = 'info') {
+            const modal = document.getElementById('modal-alerta');
+            const icono = document.getElementById('alerta-icono');
+            const tituloEl = document.getElementById('alerta-titulo');
+            const mensajeEl = document.getElementById('alerta-mensaje');
+            const btn = document.getElementById('alerta-btn');
+
+            tituloEl.innerText = titulo;
+            mensajeEl.innerText = mensaje;
+
+            if (tipo === 'error') {
+                icono.className = "w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4";
+                icono.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>';
+                btn.className = "w-full p-2 rounded font-bold text-white bg-red-600 hover:bg-red-700";
+            } else {
+                icono.className = "w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4";
+                icono.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>';
+                btn.className = "w-full p-2 rounded font-bold text-white bg-blue-600 hover:bg-blue-700";
+            }
+            modal.classList.remove('hidden');
+        }
+
+        function mostrarConfirmacion(titulo, mensaje, onConfirm) {
+            const modal = document.getElementById('modal-confirm');
+            document.getElementById('confirm-titulo').innerText = titulo;
+            document.getElementById('confirm-mensaje').innerText = mensaje;
+            const btn = document.getElementById('confirm-btn-proceder');
+            
+            const newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            
+            newBtn.onclick = () => {
+                modal.classList.add('hidden');
+                onConfirm();
+            };
+            modal.classList.remove('hidden');
+        }
+
         function cargarDocumentosRelacionados() {
             if (currentUser.rol === 'admin' || currentUser.rol === 'cajero') cargarCobros();
             if (currentUser.rol === 'admin' || currentUser.rol === 'mecanico') cargarTaller();
@@ -647,8 +732,8 @@
             } catch (error) {
                 // Si fetch falla es porque el servidor no está funcionando o no hay red
                 console.error("Error de comunicación con el servidor:", error);
-                alert("El servidor no responde. Serás redirigido al login por seguridad.");
-                logout();
+                mostrarAlerta("Error de Conexión", "El servidor no responde. Por seguridad, la sesión se cerrará.", "error");
+                setTimeout(logout, 3000);
                 return null;
             }
         }
@@ -732,6 +817,17 @@
                 cacheCatalogo.map(i => `<option value="${i.id}">${i.nombre} - Lps. ${i.precio}</option>`).join('');
             
             if(currentUser.rol === 'admin') renderCatalogoAdmin();
+        }
+
+        async function cargarMecanicos() {
+            const resp = await apiRequest(`${API_BASE_URL}/usuarios/mecanicos`, { headers: getHeaders() });
+            if (!resp) return;
+            cacheMecanicos = await resp.json();
+            const select = document.getElementById('select-mecanico-asignado');
+            if (select) {
+                select.innerHTML = '<option value="">-- Sin mecánico preferido (Cualquiera) --</option>' + 
+                    cacheMecanicos.map(m => `<option value="${m.id}">${m.username.toUpperCase()}</option>`).join('');
+            }
         }
 
         function cargarVehiculosCliente(clienteId) {
@@ -839,7 +935,7 @@
             if (tipo === 'Cotizacion') {
                 clienteData.identidad = '';
             }
-            if(!clienteData.nombre || itemsSeleccionados.length === 0) return alert("Faltan datos");
+            if(!clienteData.nombre || itemsSeleccionados.length === 0) return mostrarAlerta("Datos Incompletos", "Por favor, ingrese el nombre del cliente y al menos un servicio/producto.", "error");
 
             // 1. Obtener ID del cliente (existente o nuevo)
             let clienteId = selectedClienteId;
@@ -872,10 +968,10 @@
                 } else {
                     try {
                         const err = await respCli.json();
-                        return alert("Error al procesar cliente: " + err.detail);
+                        return mostrarAlerta("Error al Registrar Cliente", err.detail || "Error desconocido al registrar el cliente.", "error");
                     } catch (e) {
                         console.error("Error servidor:", await respCli.text());
-                        return alert("Error al registrar cliente. Verifique que los datos sean correctos.");
+                        return mostrarAlerta("Error de Servidor", "Error al registrar cliente. Verifique que los datos sean correctos.", "error");
                     }
                 }
             }
@@ -883,7 +979,7 @@
             if(!clienteId) {
                 // Si el RTN ya existe, el backend dio error, pero para este flujo 
                 // necesitaríamos un buscador de clientes real. Por ahora alertamos.
-                return alert("El cliente ya existe o el RTN está duplicado.");
+                return mostrarAlerta("Cliente Existente", "El cliente ya existe o el RTN está duplicado.", "error");
             }
 
             // 2. Crear Orden
@@ -891,21 +987,27 @@
             const total = parseFloat(document.getElementById('total-orden').innerText);
             
             const requiereTaller = itemsSeleccionados.some(i => i.tipo === 'Mano de Obra');
+            const mecanicoId = document.getElementById('select-mecanico-asignado').value;
+            const placa = document.getElementById('v-placa').value;
+            const marca = document.getElementById('v-marca').value;
+            const modelo = document.getElementById('v-modelo').value;
+            const anio = document.getElementById('v-anio').value;
+            const color = document.getElementById('v-color').value;
 
-            const params = new URLSearchParams({
-                cliente_id: clienteId,
-                descripcion: desc,
-                total: total,
-                factura_nombre: clienteData.nombre,
-                factura_identidad: clienteData.identidad,
-                tipo: tipo,
-                placa: document.getElementById('v-placa').value,
-                marca: document.getElementById('v-marca').value,
-                modelo: document.getElementById('v-modelo').value,
-                anio: document.getElementById('v-anio').value || 0,
-                color: document.getElementById('v-color').value,
-                requiere_taller: requiereTaller
-            });
+            const params = new URLSearchParams();
+            params.append('cliente_id', clienteId);
+            params.append('descripcion', desc);
+            params.append('total', total);
+            params.append('factura_nombre', clienteData.nombre);
+            if (clienteData.identidad) params.append('factura_identidad', clienteData.identidad);
+            params.append('tipo', tipo);
+            if (placa) params.append('placa', placa);
+            if (marca) params.append('marca', marca);
+            if (modelo) params.append('modelo', modelo);
+            if (anio) params.append('anio', anio);
+            if (color) params.append('color', color);
+            params.append('requiere_taller', requiereTaller);
+            if (mecanicoId) params.append('mecanico_id', mecanicoId);
 
             const respOrd = await apiRequest(`${API_BASE_URL}/ordenes/?${params.toString()}`, {
                 method: 'POST',
@@ -916,8 +1018,8 @@
 
             if(respOrd.ok) {
                 const ordenResult = await respOrd.json();
-                alert(`${tipo} guardada exitosamente`);
-                
+                mostrarAlerta("Éxito", `${tipo} guardada exitosamente`, "info");
+
                 // Limpiar formulario y borradores
                 itemsSeleccionados = [];
                 renderItemsOrden();
@@ -934,7 +1036,17 @@
 
                 // Mostrar el documento (Cotización o Factura) inmediatamente para impresión
                 mostrarFactura(ordenResult.id, [ordenResult]);
+                return;
             }
+
+            let errorMessage = "Error desconocido al crear la orden.";
+            try {
+                const errorData = await respOrd.json();
+                errorMessage = errorData.detail || errorData.message || errorMessage;
+            } catch (e) {
+                console.error("Error parseando respuesta de orden", e);
+            }
+            mostrarAlerta("Error al Crear Orden", errorMessage, "error");
         }
 
         async function crearItemCatalogo() {
@@ -952,7 +1064,7 @@
             if (!resp) return;
 
             if(resp.ok) {
-                alert("Item agregado");
+                mostrarAlerta("Éxito", "Item agregado correctamente", "info");
                 cargarCatalogo();
             }
         }
@@ -990,7 +1102,7 @@
             const cant = document.getElementById('compra-cantidad').value;
             const costo = document.getElementById('compra-costo').value;
             
-            if (!cant || !costo) return alert("Por favor complete todos los campos");
+            if (!cant || !costo) return mostrarAlerta("Datos Incompletos", "Por favor complete todos los campos de cantidad y costo.", "error");
 
             const params = new URLSearchParams({ item_id: id, cantidad: cant, costo_total: costo });
             const resp = await apiRequest(`${API_BASE_URL}/inventario/comprar?${params.toString()}`, { 
@@ -999,7 +1111,7 @@
             });
 
             if (resp && resp.ok) {
-                alert("Inventario actualizado");
+                mostrarAlerta("Éxito", "Inventario actualizado correctamente", "info");
                 document.getElementById('modal-compra-stock').classList.add('hidden');
                 cargarCatalogo();
             }
@@ -1019,7 +1131,7 @@
             };
 
             if(!data.nombre) {
-                alert("El nombre del cliente es obligatorio");
+                mostrarAlerta("Nombre Requerido", "El nombre del cliente es obligatorio.", "error");
                 return;
             }
 
@@ -1032,7 +1144,7 @@
             if (!resp) return;
 
             if(resp.ok) {
-                alert("Cliente registrado exitosamente");
+                mostrarAlerta("Éxito", "Cliente registrado exitosamente", "info");
                 document.getElementById('reg-nombre').value = '';
                 document.getElementById('reg-identidad').value = '';
                 document.getElementById('reg-tel').value = '';
@@ -1041,11 +1153,11 @@
             } else {
                 try {
                     const err = await resp.json();
-                    alert("Error al guardar: " + (err.detail || "Error desconocido"));
+                    mostrarAlerta("Error al Guardar Cliente", err.detail || "Error desconocido al guardar el cliente.", "error");
                 } catch (e) {
                     const text = await resp.text();
                     console.error("Error del servidor:", text);
-                    alert("Error crítico del servidor. Verifique si el RTN ya existe o es muy largo.");
+                    mostrarAlerta("Error de Servidor", "Error crítico del servidor. Verifique si el RTN ya existe o es muy largo.", "error");
                 }
             }
         }
@@ -1083,6 +1195,30 @@
             renderClientesTable(cacheClientes);
         }
 
+        function obtenerNumeroInicialDesdeRango(rango) {
+            if (!rango) return 1;
+            const match = rango.toString().trim().match(/(\d+)$/);
+            if (!match) return 1;
+            const numero = parseInt(match[1], 10);
+            return (!isNaN(numero) && numero > 0) ? numero : 1;
+        }
+
+        function construirRangoDesdeConNumero(rango, numero) {
+            if (!numero || isNaN(numero) || numero <= 0) return rango || '';
+            const numeroStr = numero.toString();
+
+            if (!rango) return numeroStr;
+            const match = rango.toString().trim().match(/(\d+)$/);
+            if (!match) {
+                // Si no hay sufijo reconocible, agregamos con guión
+                return `${rango}-${numeroStr}`;
+            }
+
+            const longitudAnterior = match[1].length;
+            const numeroPadding = numeroStr.padStart(longitudAnterior, '0');
+            return `${rango.slice(0, match.index)}${numeroPadding}`;
+        }
+
         async function cargarDatosNegocio() {
             const resp = await apiRequest(`${API_BASE_URL}/negocio/`, { headers: getHeaders() });
             if (!resp) return;
@@ -1107,6 +1243,7 @@
                 document.getElementById('biz-cai').value = cacheNegocio.cai;
                 document.getElementById('biz-desde').value = cacheNegocio.rango_desde;
                 document.getElementById('biz-hasta').value = cacheNegocio.rango_hasta;
+                document.getElementById('biz-numero-inicio').value = cacheNegocio.numero_inicio_factura || 1;
                 document.getElementById('biz-limite').value = cacheNegocio.fecha_limite.split('T')[0];
             }
         }
@@ -1123,6 +1260,8 @@
                 });
             }
 
+            const numeroInicio = parseInt(document.getElementById('biz-numero-inicio').value, 10);
+
             const data = {
                 nombre: document.getElementById('biz-nombre').value,
                 rtn: document.getElementById('biz-rtn').value,
@@ -1132,6 +1271,7 @@
                 rango_desde: document.getElementById('biz-desde').value,
                 rango_hasta: document.getElementById('biz-hasta').value,
                 fecha_limite: document.getElementById('biz-limite').value,
+                numero_inicio_factura: (!isNaN(numeroInicio) && numeroInicio > 0) ? numeroInicio : 1,
                 logo: logoBase64
             };
 
@@ -1142,7 +1282,7 @@
             });
 
             if (resp && resp.ok) {
-                alert("Datos del negocio actualizados correctamente");
+                mostrarAlerta("Éxito", "Datos del negocio actualizados correctamente", "info");
                 cacheNegocio = await resp.json();
             }
         }
@@ -1191,7 +1331,7 @@
                 direccion: document.getElementById('edit-cli-dir').value
             };
 
-            if (!data.nombre) return alert("El nombre del cliente es obligatorio");
+            if (!data.nombre) return mostrarAlerta("Nombre Requerido", "El nombre del cliente es obligatorio.", "error");
 
             const resp = await apiRequest(`${API_BASE_URL}/clientes/${id}`, {
                 method: 'PUT',
@@ -1200,7 +1340,7 @@
             });
 
             if (resp && resp.ok) {
-                alert("Cliente actualizado correctamente");
+                mostrarAlerta("Éxito", "Cliente actualizado correctamente", "info");
                 document.getElementById('modal-cliente').classList.add('hidden');
                 cargarClientesFull();
                 cargarDocumentosRelacionados();
@@ -1216,7 +1356,7 @@
                 }
             } else if (resp) {
                 const err = await resp.json();
-                alert("Error al actualizar: " + err.detail);
+                mostrarAlerta("Error al Actualizar Cliente", err.detail || "Error desconocido al actualizar el cliente.", "error");
             }
         }
 
@@ -1238,7 +1378,7 @@
                 existencia: parseInt(document.getElementById('edit-inv-existencia').value)
             };
 
-            if (!data.nombre || isNaN(data.precio)) return alert("Nombre y precio son obligatorios");
+            if (!data.nombre || isNaN(data.precio)) return mostrarAlerta("Datos Incompletos", "El nombre y el precio del item son obligatorios.", "error");
 
             const resp = await apiRequest(`${API_BASE_URL}/inventario/${id}`, {
                 method: 'PUT',
@@ -1247,27 +1387,39 @@
             });
 
             if (resp && resp.ok) {
-                alert("Item actualizado correctamente");
+                mostrarAlerta("Éxito", "Item actualizado correctamente", "info");
                 document.getElementById('modal-inventario').classList.add('hidden');
                 cargarCatalogo();
             } else if (resp) {
                 const err = await resp.json();
-                alert("Error al actualizar: " + err.detail);
+                mostrarAlerta("Error al Actualizar Item", err.detail || "Error desconocido al actualizar el item.", "error");
             }
         }
 
         async function eliminarCliente(id) {
-            if(!confirm("¿Está seguro de eliminar este cliente? Esto podría afectar historiales.")) return;
-            const resp = await apiRequest(`${API_BASE_URL}/clientes/${id}`, {
-                method: 'DELETE',
-                headers: getHeaders()
-            });
-            if (!resp) return;
+            mostrarConfirmacion(
+                "¿Eliminar Cliente?", 
+                "Esta acción podría afectar historiales de facturación. ¿Desea continuar?", 
+                async () => {
+                    const resp = await apiRequest(`${API_BASE_URL}/clientes/${id}`, {
+                        method: 'DELETE',
+                        headers: getHeaders()
+                    });
+                    if (!resp) return;
 
-            if(resp.ok) {
-                alert("Cliente eliminado");
-                cargarClientesFull();
-            }
+                    if(resp.ok) {
+                        mostrarAlerta("Éxito", "Cliente eliminado correctamente", "info");
+                        cargarClientesFull();
+                    } else {
+                        try {
+                            const err = await resp.json();
+                            mostrarAlerta("No se puede eliminar", err.detail || "Error desconocido", "error");
+                        } catch (e) {
+                            mostrarAlerta("Error", "Ocurrió un error inesperado al intentar eliminar.", "error");
+                        }
+                    }
+                }
+            );
         }
 
         async function cargarUsuarios() {
@@ -1301,14 +1453,35 @@
             if (!resp) return;
 
             if(resp.ok) {
-                alert("Usuario creado");
+                mostrarAlerta("Éxito", "Usuario creado correctamente", "info");
                 cargarUsuarios();
                 document.getElementById('new-user').value = '';
                 document.getElementById('new-pass').value = '';
             } else {
                 const err = await resp.json();
-                alert("Error: " + err.detail);
+                mostrarAlerta("Error al Crear Usuario", err.detail || "Error desconocido al crear el usuario.", "error");
             }
+        }
+
+        async function eliminarUsuario(id) {
+            mostrarConfirmacion(
+                "¿Eliminar Usuario?",
+                "¿Está seguro de eliminar este usuario? Esta acción es irreversible.",
+                async () => {
+                    const resp = await apiRequest(`${API_BASE_URL}/usuarios/${id}`, {
+                        method: 'DELETE',
+                        headers: getHeaders()
+                    });
+                    if (!resp) return;
+                    if(resp.ok) {
+                        mostrarAlerta("Éxito", "Usuario eliminado correctamente", "info");
+                        cargarUsuarios();
+                    } else {
+                        const err = await resp.json();
+                        mostrarAlerta("Error al Eliminar Usuario", err.detail || "Error desconocido al eliminar el usuario.", "error");
+                    }
+                }
+            );
         }
 
         function editarUsuario(id, username, rol) {
@@ -1325,7 +1498,7 @@
             const rol = document.getElementById('edit-user-rol').value;
             const pass = document.getElementById('edit-user-pass').value;
 
-            if (!username) return alert("El nombre de usuario es obligatorio");
+            if (!username) return mostrarAlerta("Nombre de Usuario Requerido", "El nombre de usuario es obligatorio.", "error");
 
             const data = { username, rol };
             if (pass) data.password = pass;
@@ -1337,12 +1510,12 @@
             });
 
             if (resp && resp.ok) {
-                alert("Usuario actualizado correctamente");
+                mostrarAlerta("Éxito", "Usuario actualizado correctamente", "info");
                 document.getElementById('modal-usuario').classList.add('hidden');
                 cargarUsuarios();
             } else if (resp) {
                 const err = await resp.json();
-                alert("Error: " + err.detail);
+                mostrarAlerta("Error al Actualizar Usuario", err.detail || "Error desconocido al actualizar el usuario.", "error");
             }
         }
 
@@ -1420,22 +1593,27 @@
         }
 
         async function convertirAOrden(id) {
-            if(!confirm("¿Desea convertir esta cotización en una orden de cobro? Los precios actuales serán respetados.")) return;
-            const resp = await apiRequest(`${API_BASE_URL}/caja/convertir-cotizacion/${id}`, { method: 'POST', headers: getHeaders() });
-            if (!resp) return;
-            if (resp.ok) {
-                alert("Cotización enviada a caja con éxito.");
-                document.getElementById('modal-factura').classList.add('hidden');
-                cargarCotizaciones();
-                cargarCobros();
-                return;
-            }
-            try {
-                const error = await resp.json();
-                alert("Error al enviar a caja: " + (error.detail || JSON.stringify(error)));
-            } catch (e) {
-                alert("Error al enviar a caja: " + resp.statusText);
-            }
+            mostrarConfirmacion(
+                "Convertir a Orden de Cobro",
+                "¿Desea convertir esta cotización en una orden de cobro? Los precios actuales serán respetados.",
+                async () => {
+                    const resp = await apiRequest(`${API_BASE_URL}/caja/convertir-cotizacion/${id}`, { method: 'POST', headers: getHeaders() });
+                    if (!resp) return;
+                    if (resp.ok) {
+                        mostrarAlerta("Éxito", "Cotización enviada a caja con éxito.", "info");
+                        document.getElementById('modal-factura').classList.add('hidden');
+                        cargarCotizaciones();
+                        cargarCobros();
+                        return;
+                    }
+                    try {
+                        const error = await resp.json();
+                        mostrarAlerta("Error al Convertir Cotización", error.detail || "Error desconocido al enviar a caja.", "error");
+                    } catch (e) {
+                        mostrarAlerta("Error de Servidor", "Error al enviar a caja: " + resp.statusText, "error");
+                    }
+                }
+            );
         }
 
         async function cargarPagadas() {
@@ -1518,7 +1696,9 @@
                         ${!o.mecanico_id 
                             ? `<button onclick="asignarTrabajo(${o.id})" class="bg-blue-600 text-white px-4 py-2 rounded text-sm font-bold hover:bg-blue-700">Tomar Trabajo</button>`
                             : (o.mecanico_id === currentUser.user_id 
-                                ? `<button onclick="completarTrabajo(${o.id})" class="bg-green-600 text-white px-3 py-2 rounded text-sm font-bold hover:bg-green-700">Trabajo Completado</button>`
+                                ? (o.inicio_trabajo 
+                                    ? `<button onclick="completarTrabajo(${o.id})" class="bg-green-600 text-white px-3 py-2 rounded text-sm font-bold hover:bg-green-700">Trabajo Completado</button>`
+                                    : `<button onclick="asignarTrabajo(${o.id})" class="bg-blue-600 text-white px-3 py-2 rounded text-sm font-bold hover:bg-blue-700">Iniciar Mi Trabajo</button>`)
                                 : `<span class="text-xs font-bold text-gray-400 italic">En proceso por otro...</span>`)
                         }
                     </div>
@@ -1535,19 +1715,24 @@
                 cargarTaller();
             } else if (resp) {
                 const err = await resp.json();
-                alert(err.detail);
+                mostrarAlerta("Error de Asignación", err.detail, "error");
             }
         }
 
         async function completarTrabajo(id) {
-            if(!confirm("¿Desea marcar este trabajo como completado? Se quitará de la pantalla.")) return;
-            const resp = await apiRequest(`${API_BASE_URL}/taller/completar/${id}`, { 
-                method: 'POST',
-                headers: getHeaders()
-            });
-            if (resp && resp.ok) {
-                cargarTaller();
-            }
+            mostrarConfirmacion(
+                "Completar Trabajo", 
+                "¿Desea marcar este trabajo como completado? Se quitará de la pantalla.", 
+                async () => {
+                    const resp = await apiRequest(`${API_BASE_URL}/taller/completar/${id}`, { 
+                        method: 'POST',
+                        headers: getHeaders()
+                    });
+                    if (resp && resp.ok) {
+                        cargarTaller();
+                    }
+                }
+            );
         }
 
         async function cargarBalances() {
@@ -1623,7 +1808,7 @@
             });
 
             if (resp && resp.ok) {
-                alert("Documento anulado con éxito.");
+                mostrarAlerta("Éxito", "Documento anulado con éxito.", "info");
                 document.getElementById('modal-anular').classList.add('hidden');
                 document.getElementById('modal-factura').classList.add('hidden');
                 cargarPagadas();
@@ -1670,7 +1855,7 @@
             });
 
             if (resp && resp.ok) {
-                alert("Datos de facturación actualizados");
+                mostrarAlerta("Éxito", "Datos de facturación actualizados", "info");
                 location.reload(); 
             }
         }
@@ -1692,6 +1877,7 @@
             document.getElementById('btn-convertir-factura').classList.toggle('hidden', !isCotizacion);
             document.getElementById('btn-imprimir-copia').classList.toggle('hidden', !isFinalized && !isCotizacion);
             document.querySelector('#modal-factura h2').innerText = isCotizacion ? 'Detalle de Cotización' : (isAnulada ? 'Factura Anulada' : (isPaid ? 'Consulta de Factura' : 'Detalle de Cobro'));
+
 
             // Reset campos de pago
             document.getElementById('select-metodo').value = 'Efectivo';
@@ -1730,14 +1916,20 @@
                 return { cant: 1, nombre: row, precio: 0 }; // Texto simple sin formato
             });
 
-            // Lógica para detectar etiqueta dinámica RTN vs DNI en la factura
+            const ordenTotal = parseFloat(orden.total) || 0;
+            const { base, iva } = calcularImpuesto(ordenTotal);
+
+            // Lógica para identificar la identidad del cliente en factura o cotización
             let idLabel = "RTN";
             let idValue = orden.cliente_rtn;
-            if (orden.cliente_rtn === 'Consumidor Final' && orden.cliente_dni !== 'N/A') {
-                idLabel = "DNI";
-                idValue = orden.cliente_dni;
-            } else if (orden.cliente_rtn === 'Consumidor Final' && orden.cliente_dni === 'N/A') {
-                idValue = "Consumidor Final";
+            if (orden.cliente_rtn === 'Consumidor Final' || !orden.cliente_rtn) {
+                if (orden.cliente_dni && orden.cliente_dni !== 'N/A') {
+                    idLabel = "DNI";
+                    idValue = orden.cliente_dni;
+                } else {
+                    idLabel = "Identidad";
+                    idValue = "Consumidor Final";
+                }
             }
 
             const content = document.getElementById('factura-content');
@@ -1767,7 +1959,7 @@
 
                 <div class="text-sm border-b pb-2">
                     <p><strong>Cliente:</strong> ${orden.cliente_nombre}</p>
-                    ${!isCotizacion ? `<p><strong>${idLabel}:</strong> ${idValue}</p>` : ''}
+                    <p><strong>${idLabel}:</strong> ${idValue}</p>
                     <p><strong>Fecha:</strong> ${new Date(orden.fecha + 'Z').toLocaleString()}</p>
                 </div>
                 <div class="text-sm space-y-1">
@@ -1778,9 +1970,19 @@
                         </div>
                     `).join('')}
                 </div>
+                <div class="mt-3 text-sm space-y-1 border-t pt-2">
+                    <div class="flex justify-between">
+                        <span>Subtotal:</span>
+                        <span>Lps. ${base.toFixed(2)}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span>Impuesto 15%:</span>
+                        <span>Lps. ${iva.toFixed(2)}</span>
+                    </div>
+                </div>
                 <div class="flex justify-between font-bold text-xl border-t pt-2 text-blue-800">
                     <span>TOTAL:</span>
-                    <span>Lps. ${orden.total.toFixed(2)}</span>
+                    <span>Lps. ${ordenTotal.toFixed(2)}</span>
                 </div>
                 ${orden.comprobante_pago ? `
                     <div class="mt-4 p-2 border rounded bg-gray-50 print:hidden border-dashed">
@@ -1802,7 +2004,7 @@
             const comprobanteInput = document.getElementById('input-comprobante');
 
             if ((metodo === 'Tarjeta' || metodo === 'Transferencia') && !referencia) {
-                alert("Debe ingresar el número de referencia o confirmación");
+                mostrarAlerta("Referencia Requerida", "Debe ingresar el número de referencia o confirmación para el método de pago seleccionado.", "error");
                 return;
             }
 
@@ -1834,14 +2036,14 @@
             window.print();
 
             document.getElementById('modal-factura').classList.add('hidden');
-            alert("¡Cobro realizado con éxito!");
+            mostrarAlerta("Éxito", "¡Cobro realizado con éxito!", "info");
             cargarCobros();
         }
 
         function openComprobante(src) {
             const win = window.open('');
             if (!win) {
-                alert('No se pudo abrir el comprobante en una nueva ventana. Por favor habilite ventanas emergentes para este sitio.');
+                mostrarAlerta("Error al Abrir Comprobante", 'No se pudo abrir el comprobante en una nueva ventana. Por favor habilite ventanas emergentes para este sitio.', "error");
                 return;
             }
             win.document.write(`<!DOCTYPE html><html><head><title>Comprobante de Pago</title><style>body{margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh}img{max-width:100%;max-height:100vh;display:block}</style></head><body><img src="${src}" alt="Comprobante de pago"></body></html>`);
